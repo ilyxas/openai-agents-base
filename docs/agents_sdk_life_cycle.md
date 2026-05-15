@@ -43,6 +43,22 @@ In short:
 - **Runtime**: executes authorized units (tools, agent calls, handoffs, sandbox execution).
 - **Tracing Layer**: emits auditable lifecycle events and metrics.
 
+## Orchestrator: Deterministic Control Logic
+
+The Orchestrator is the central authority that executes the lifecycle. Unlike agents, it is not a generative component; it is purely procedural and responsible for enforcing:
+
+- **Lifecycle Transitions**: Moves tasks through deterministic states:
+  - `proposed → validating → authorized → executing → evaluating → completed`.
+- **Feedback Loops**: Supports recursive revision:
+  - If execution fails or outputs violate policies, the Orchestrator:
+    - revises the task step,
+    - replans via Planner Agent, or
+    - halts execution.
+- **Human-in-the-Loop**: Seamlessly integrates manual approvals for critical paths.
+- **Policy Enforcement**: Decisions are strictly rule-based (e.g., budget, permissions).
+
+The Orchestrator continuously evaluates progress using trace events, adjusting execution to optimize results.
+
 ## Modular Extensibility for Projects
 
 Each project dynamically configures its modules:
