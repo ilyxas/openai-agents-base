@@ -43,6 +43,24 @@ In short:
 - **Runtime**: executes authorized units (tools, agent calls, handoffs, sandbox execution).
 - **Tracing Layer**: emits auditable lifecycle events and metrics.
 
+## Modular Extensibility for Projects
+
+Each project dynamically configures its modules:
+- **Agents**: Specialized planners/workers/critics.
+- **Tools**: Local or external tools, such as computation pipelines, HTTP/API bridges.
+- **Guardrails**: Input, output, and execution boundaries.
+- **Policies**: Budgets, compliance rules, risk thresholds.
+- **Runtime Modes**: Sandbox, live systems, or parallel workers.
+
+### Example:
+For a "Game Development" scenario, components may include:
+- **Planner Agent**: TaskGraph decomposition (code scaffolding).
+- **Worker Agents**: Implement gameplay, UI, and build process.
+- **Tools**: File I/O and build/test tools.
+- **Guardrails**: Ensure safe command execution.
+- **Policies**: Validate code quality before packaging.
+- **Runtime**: Handles shell/task execution connected to worker roles.
+
 ## Visual Flow Between Components
 
 ```text
