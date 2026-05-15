@@ -1,23 +1,17 @@
-# OpenAI Agents SDK Life Cycle for Deterministic Multi-Agent Orchestration
+## Overview: Deterministic Multi-Agent Orchestration
 
-## Overview
+This framework orchestrates execution lifecycles using modular and extensible components. It enables deterministic control for a wide variety of project scenarios by integrating:
+- `Agents`: Propose logical steps.
+- `Orchestrator`: Centrally regulates all state transitions.
+- `Runtime`: Executes authorized steps.
+- `Critic`: Evaluates quality and compliance, feeding back into iterative workflows.
+- `HITL`: Integrates critical human decisions.
 
-This repository is a **lifecycle execution framework** for future projects.
-
-It is not tied to one fixed set of agents or tools. Instead, each project/scenario registers its own:
-
-- agent roles,
-- tools,
-- guardrails,
-- policy rules,
-- human-approval points,
-- tracing/observability settings.
-
-The core execution model is:
-
-1. Agent(s) propose next action(s).
-2. Deterministic Orchestrator authorizes/rejects/escalates/replans.
-3. Runtime executes authorized action(s).
+The core execution principle separates **planning**, **authorization**, **execution**, and **validation steps** into a systematic lifecycle framework:
+1. Proposal: Agents decompose tasks into structured plans.
+2. Validation: Orchestrator ensures compliance with rules and policies.
+3. Execution: Runtime executes atomic steps on workers.
+4. Evaluation: Results are recursively validated to modify or finalize outputs.
 
 ## Core Clarification
 
