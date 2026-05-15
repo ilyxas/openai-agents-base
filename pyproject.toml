@@ -1,0 +1,5 @@
+[project]
+name = "openai-agents-base"
+version = "0.1.0"
+description = "Architecture and flow based on OpenAI Agents SDK"
+requires-python = ">=3.10"
