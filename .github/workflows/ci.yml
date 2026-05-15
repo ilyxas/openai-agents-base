@@ -1,0 +1,13 @@
+name: CI
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Placeholder
+        run: echo "CI workflow placeholder"
