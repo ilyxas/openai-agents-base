@@ -1,210 +1,266 @@
-# OpenAI Agents SDK Life Cycle for Multi-Agent Orchestration
+# OpenAI Agents SDK Life Cycle for Deterministic Multi-Agent Orchestration
 
 ## Overview
 
-This document translates the high-level architecture from `docs/architecture.md` into a low-level execution life cycle using OpenAI Agents SDK primitives.
+This repository is a **lifecycle execution framework** for future projects.
 
-The implementation model is a **manager-centered orchestration**:
+It is not tied to one fixed set of agents or tools. Instead, each project/scenario registers its own:
 
-- A **Planner Agent** creates a structured `TaskGraph`.
-- A **Policy Gate** validates constraints before execution.
-- An **Orchestrator Agent** executes graph steps, delegates work, and controls retries/re-planning.
-- **Worker Agents** perform bounded atomic tasks through tools.
-- A **Critic Agent** evaluates quality and completion criteria.
-- A **HITL Agent** introduces human approval where required.
-- **Tracing** records every run for observability and diagnostics.
+- agent roles,
+- tools,
+- guardrails,
+- policy rules,
+- human-approval points,
+- tracing/observability settings.
 
-The OpenAI Agents SDK maps this to:
+The core execution model is:
 
-- `Agent` for each role.
-- `Runner.run(...)` loop for each orchestration turn.
-- `Agent.as_tool()` (manager pattern) and optional `handoffs` (specialist takeover pattern).
-- `input_guardrails`, `output_guardrails`, and tool guardrails for policy/safety boundaries.
-- `session` or `result.to_input_list()` for multi-turn state continuity.
+1. Agent(s) propose next action(s).
+2. Deterministic Orchestrator authorizes/rejects/escalates/replans.
+3. Runtime executes authorized action(s).
 
-## Design Mapping to Repository Architecture
+## Core Clarification
 
-- `src/agents/planner_agent.py` → Planner role: transforms intent into `TaskGraph`.
-- `src/policies/policy_gate.py` → Policy validator: budget/risk/tool constraints.
-- `src/agents/orchestrator.py` → Central controller and execution loop coordinator.
-- `src/agents/worker_agents/*` → Domain specialists wrapped as tools or handoff targets.
-- `src/agents/critic_agent.py` → Quality evaluator and feedback producer.
-- `src/agents/hitl_agent.py` → Human approval and escalation integration.
-- `src/core/task_graph.py` → Canonical workflow state (`TaskGraph`, `TaskStep`, status, dependencies).
-- `src/tracing/trace_logger.py` → Structured run/step events and post-mortem traces.
-- `src/flows/task_flow.py` → Predefined end-to-end composition of these roles.
+The **Orchestrator is not an LLM Agent**.
+
+The Orchestrator is deterministic control logic (algorithm/state machine) that enforces lifecycle transitions:
+
+- `validate`
+- `approve`
+- `reject`
+- `ask_human`
+- `replan`
+- `execute`
+
+In short:
+
+- **Agent proposes next step**.
+- **Orchestrator authorizes next step**.
+- **Runtime executes next step**.
+
+## Component Responsibilities
+
+- **Planner Agent**: converts task intent into an initial `TaskGraph` proposal.
+- **Project Agents**: specialized reasoning/generation agents for domain tasks.
+- **Critic Agent**: evaluates outputs against quality/acceptance criteria.
+- **HITL Component**: obtains human decision for gated or high-risk transitions.
+- **Policy Gate**: deterministic checks for budget, risk, permission, compliance, tool availability.
+- **Deterministic Orchestrator**: lifecycle controller and state transition authority.
+- **Runtime**: executes authorized units (tools, agent calls, handoffs, sandbox execution).
+- **Tracing Layer**: emits auditable lifecycle events and metrics.
+
+## Visual Flow Between Components
+
+```text
++-------------------+      propose next step      +---------------------------+
+| Planner/Worker    | --------------------------> | Deterministic Orchestrator|
+| Agent(s)          |                             | (state machine / policy)  |
++-------------------+                             +-------------+-------------+
+                                                              |
+                     +----------------------- authorize -------+-------+
+                     |                                           reject |
+                     v                                                  v
+          +------------------------+                         +--------------------+
+          | Runtime Executor       |                         | Failure/Stop Path  |
+          | (tools/sandbox/handoff)|                         | + diagnostics      |
+          +-----------+------------+                         +--------------------+
+                      |
+                      | result/events
+                      v
+          +------------------------+
+          | Critic + Guardrails    |
+          | (quality/safety check) |
+          +-----------+------------+
+                      |
+        pass ---------+--------- revise/replan --------+
+                      |                                 |
+                      v                                 v
+            +------------------+                +------------------+
+            | Complete/Finalize|                | Re-enter planner |
+            +------------------+                +------------------+
+
+Human approval gate can be triggered by orchestrator before authorization:
+Orchestrator -> HITL decision -> authorize/reject/modify -> Runtime
+```
 
 ## Low-Level Life Cycle
 
-## 1) Intake and Run Context Initialization
+## 1) Registration and Bootstrapping
 
-1. Receive user `TaskIntent`.
-2. Create `RunConfig` defaults for model/provider/tracing/tool execution policies.
-3. Create conversation continuity strategy:
-   - `session` for persistent runs, or
-   - `to_input_list()` when state is app-managed.
-4. Attach global run hooks for lifecycle events (`on_agent_start`, `on_tool_start`, `on_handoff`, etc.).
+Before execution, a project registers capabilities into the framework:
 
-## 2) Planning Phase
+- `AgentRegistry`: planner, workers, critic, optional realtime/sandbox agents.
+- `ToolRegistry`: function tools, MCP tools, hosted tools, local runtime tools.
+- `GuardrailRegistry`: input/output/tool guardrails.
+- `PolicyRegistry`: deterministic rules and thresholds.
+- `FlowRegistry`: reusable flow templates.
 
-1. `Runner.run(planner_agent, TaskIntent, ...)`.
-2. Planner returns structured plan payload mapped to `TaskGraph`.
-3. Persist graph and initialize step state (`pending`).
-4. Emit planning trace with graph hash/version.
+Output of this phase: runnable project profile + lifecycle configuration.
 
-## 3) Policy Validation Phase
+## 2) Task Intake and Plan Proposal
 
-1. Execute Policy Gate checks against `TaskGraph`.
-2. Validate:
-   - safety/risk constraints,
-   - budget/time/tool limits,
-   - dependency correctness.
-3. Outcomes:
-   - **approved** → continue to execution,
-   - **needs_revision** → return feedback to Planner and regenerate,
-   - **rejected** → fail run with actionable diagnostics.
+1. Receive high-level user task intent.
+2. Planner Agent proposes a `TaskGraph` (steps, dependencies, expected outputs).
+3. Orchestrator records proposal as `proposed` state.
 
-## 4) Orchestration Phase (Main Execution Loop)
+## 3) Deterministic Validation and Authorization
 
-For each executable `TaskStep` (dependencies satisfied):
+For each candidate step, Orchestrator evaluates deterministic checks:
 
-1. Orchestrator selects next step(s) and strategy:
-   - sequential for strict dependencies,
-   - parallel for independent branches.
-2. Delegation model:
-   - **agents as tools** when orchestrator retains control,
-   - **handoff** when specialist should own the active turn.
-3. Worker executes tools and returns structured output.
-4. Orchestrator updates step state:
-   - `in_progress` → `completed` on success,
-   - `in_progress` → `failed` on error.
-5. On failure:
-   - retry (bounded attempts/backoff),
-   - fallback worker/tool,
-   - re-plan subgraph via Planner when failure is structural.
+- policy/rules,
+- risk level,
+- tool permissions,
+- budget/time limits,
+- prerequisite completion.
 
-## 5) Critic Evaluation Phase
+Decision outcomes:
 
-1. Critic reviews completed step outputs against acceptance criteria.
-2. Critic produces verdict:
-   - `pass`,
-   - `revise` (localized fix),
-   - `replan` (graph-level adaptation).
-3. Orchestrator consumes verdict:
-   - proceed,
-   - enqueue corrective steps,
-   - return to Planner with critic feedback.
+- `approve` -> dispatch to runtime,
+- `reject` -> mark terminal failure or request alternative,
+- `ask_human` -> pause for HITL decision,
+- `replan` -> request revised proposal from planner.
 
-## 6) Human-in-the-Loop Phase (Conditional)
+## 4) Runtime Execution of Authorized Step
 
-Triggered for policy-critical, high-impact, or ambiguous actions:
+Runtime executes only approved steps via:
 
-1. HITL agent receives context package (step output + risk summary + options).
-2. Human decision (`approve`, `reject`, `modify`) is captured as structured event.
-3. Orchestrator applies decision:
-   - continue execution,
-   - alter graph/parameters,
-   - terminate run.
+- tool invocations,
+- delegated worker agent runs,
+- handoffs,
+- sandbox/container tasks when required.
 
-## 7) Finalization Phase
+Each execution emits structured result payloads and trace events.
 
-1. Verify all terminal conditions:
-   - all required steps completed,
-   - no unresolved critical failures,
-   - quality gates satisfied.
-2. Produce final aggregated response artifact.
-3. Run output guardrails for final response validation.
-4. Persist full trace and final `TaskGraph` snapshot.
+## 5) Quality and Safety Review
 
-## 8) Observability and Audit Stream (Cross-Cutting)
+After runtime returns:
 
-At every phase, tracing captures:
+1. Critic Agent checks acceptance criteria.
+2. Guardrails enforce safety/compliance boundaries.
+3. Orchestrator applies deterministic transition:
+   - `accept` -> `completed`,
+   - `revise` -> re-execute adjusted step,
+   - `replan` -> planner creates updated subgraph,
+   - `fail` -> retry/fallback/terminate based on policy.
 
-- agent run boundaries,
-- tool call inputs/outputs,
-- handoffs and role transitions,
-- guardrail outcomes,
-- retries, failures, and replanning decisions,
-- token/cost/latency metrics.
+## 6) Iterative Graph Completion
 
-This enables deterministic replay, regression analysis, and optimization of orchestration policies.
+Orchestrator repeats authorize -> execute -> evaluate until:
 
-## Execution State Model
+- all required steps are completed, or
+- a terminal rejection/failure is reached.
 
-Recommended low-level step states:
+## 7) Finalization
 
-- `pending`: declared but not ready.
-- `ready`: dependencies satisfied.
-- `in_progress`: actively executed by a worker.
-- `blocked`: waiting on dependency/HITL.
-- `completed`: accepted by Critic.
-- `failed_retryable`: transient/tool/runtime failure.
-- `failed_terminal`: non-recoverable or policy-rejected.
-- `cancelled`: superseded by replanning.
+- aggregate deliverables,
+- run final output guardrails,
+- persist full trace + final graph snapshot,
+- return final artifact and execution report.
 
-Run-level states:
+## State Model
 
-- `initialized` → `planning` → `validated` → `executing` → `finalizing` → `completed`.
-- Any phase can transition to `failed` with trace-linked diagnostics.
+Step states:
 
-## Guardrails and Safety Boundaries
+- `proposed`
+- `authorized`
+- `blocked_human`
+- `running`
+- `completed`
+- `needs_revision`
+- `replanned`
+- `rejected`
+- `failed_terminal`
 
-- **Input guardrails**: enforce allowed intent domain before costly execution.
-- **Tool guardrails**: validate per-tool invocation and returned payloads.
-- **Output guardrails**: enforce final response safety/compliance.
-- **Policy Gate** remains the deterministic enforcement layer, while guardrails provide runtime model-side checks.
+Run states:
 
-## Example: Initial Task and Execution Simulation
+- `initialized -> planning -> authorizing -> executing -> evaluating -> finalizing -> completed`
+- terminal branch: `failed` / `rejected` / `cancelled`
+
+## OpenAI Agents SDK Mapping
+
+- `Agent`: planner/worker/critic implementations.
+- `Runner.run(...)`: agent/tool turn execution in runtime stage.
+- `Agent.as_tool()`: manager-style delegated specialization.
+- `handoffs`: controlled role transfer for specific subflows.
+- `input_guardrails` / `output_guardrails` / tool guardrails: runtime safety checks.
+- `session` or `result.to_input_list()`: conversation continuity.
+- tracing hooks/events: lifecycle observability.
+
+The deterministic orchestrator remains outside these SDK agent calls and decides **if/when** a call is allowed.
+
+## Example: Build a Small Real Game (Repository Architecture Simulation)
 
 ### Initial Task
 
-"Prepare a production-ready release note package from merged PRs for version `v1.4.0`, including a summary, risk flags, and rollback checklist."
+"Create a small playable browser game (2D space dodger) with scoring, collision logic, and a packaged release artifact."
 
-### Required Agent Roles
+### Registered Capabilities for This Project
 
-- **Planner Agent**: decomposes task into graph steps.
-- **Orchestrator Agent**: controls execution and state transitions.
-- **Worker Agent: Git Analyzer**: collects PR/commit metadata.
-- **Worker Agent: Summarizer**: drafts release notes.
-- **Worker Agent: Risk Reviewer**: extracts risky changes and rollback concerns.
-- **Critic Agent**: verifies completeness and quality.
-- **HITL Agent**: requests human approval for final publication.
+- Agents:
+  - Planner Agent
+  - Gameplay Logic Agent
+  - UI/UX Agent
+  - Test Writer Agent
+  - Critic Agent
+- Tools:
+  - file read/write tool
+  - shell build/test tool
+  - static analysis/lint tool
+  - artifact packaging tool
+- Guardrails:
+  - no unsafe shell commands,
+  - output code style constraints,
+  - dependency/license policy checks
+- Policies:
+  - max retries per step,
+  - required tests before packaging,
+  - mandatory HITL for final release approval
 
-### Tools Used
+### Execution Simulation
 
-- Repository API tool (read PRs, labels, commits).
-- Diff/stat analysis tool.
-- Template/rendering tool for release note formatting.
-- Policy tool for compliance checks.
-- Trace logger for run telemetry.
+1. **Plan proposal**
+   - Planner proposes graph:
+     1. scaffold game loop,
+     2. implement player/enemy movement,
+     3. implement collision + score,
+     4. create UI HUD,
+     5. generate tests,
+     6. run lint/tests,
+     7. build package,
+     8. request release approval.
 
-### Simulated Flow
+2. **Authorize step 1-4**
+   - Orchestrator validates rules and approves implementation steps.
+   - Runtime executes using Gameplay/UI agents + file/shell tools.
 
-1. **Plan**
-   - Planner creates steps:
-     1. collect merged PRs,
-     2. classify changes,
-     3. draft release notes,
-     4. generate rollback checklist,
-     5. quality validation,
-     6. human approval.
-2. **Validate**
-   - Policy Gate confirms required tools are available and scope is release-only.
-3. **Execute**
-   - Orchestrator runs Git Analyzer worker for steps 1-2.
-   - Summarizer worker drafts release text (step 3).
-   - Risk Reviewer worker generates rollback checklist (step 4).
-4. **Evaluate**
-   - Critic flags missing security-impact section; Orchestrator adds corrective sub-step.
-   - Summarizer revises output.
-5. **HITL**
-   - HITL agent asks release manager to approve publication.
-   - Human requests one wording change; Orchestrator applies revision.
-6. **Finalize**
-   - Critic passes.
-   - Output guardrail validates final text.
-   - Orchestrator marks run `completed` and stores trace + final artifacts.
+3. **Evaluate and revise**
+   - Critic reports unstable collision edge case.
+   - Orchestrator chooses `revise` (not full replan).
+   - Runtime applies targeted fix.
 
-### Result
+4. **Authorize testing gate**
+   - Orchestrator enforces policy: package step blocked until lint/tests pass.
+   - Runtime runs Test Writer + lint/test tools.
+   - Guardrail blocks one risky command; orchestrator rejects and requests safe alternative.
 
-A validated release note package is produced with full audit trail, explicit risk section, rollback checklist, and human approval evidence.
+5. **Replan branch (conditional)**
+   - Build time exceeds budget threshold.
+   - Orchestrator triggers `replan` for optimization subgraph.
+   - Planner proposes reduced asset pipeline; orchestrator approves.
+
+6. **HITL approval**
+   - Before publication, orchestrator enters `ask_human`.
+   - Human requests score reset UX change.
+   - Orchestrator authorizes one additional revision step.
+
+7. **Finalize**
+   - Runtime produces release artifact.
+   - Critic + output guardrails pass.
+   - Orchestrator closes run as `completed` with full trace report.
+
+### What This Demonstrates
+
+- Deterministic authorization control by the orchestrator.
+- Separation of concerns: proposal vs authorization vs execution.
+- Registry-based extensibility for future projects/scenarios.
+- Full lifecycle coverage: validation, retries, replanning, HITL, guardrails, and tracing.
